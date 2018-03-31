@@ -6,4 +6,7 @@
 *~
 *.layout
 *.depend
+/doc/dox/output/*
+!Doxyfile
+bin/*
 

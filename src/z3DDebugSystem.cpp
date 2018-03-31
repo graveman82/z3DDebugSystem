@@ -17,11 +17,17 @@ It's licensed unser the MIT license (see "License.txt" for details).*/
 #endif
 
 #ifndef Z3D_LOGFILENAME
-#define Z3D_LOGFILENAME "z3DLog.txt"
+#define Z3D_LOGFILENAME "z3DDebugLog.txt"
 #endif // Z3D_LOGFILENAME
 
 namespace z3D
 {
+
+// Флаг релизного режима
+static bool s_releaseMode = false;
+
+// Статус функции Log
+static bool s_fLogOn = true;
 
 // ---------------------------------------------------------------------------
 // Файл лога
@@ -95,6 +101,8 @@ public:
     static DebugFormattedBuf& Instance() { return instance_; }
 
 private:
+    int Resize(size_t from, const char* fmt);
+
     char* buf_;         // буфер
     size_t bufSize_;    // размер буфера в байтах
 
@@ -152,28 +160,31 @@ char* DebugFormattedBuf::Resize(size_t n)
 
 
 
-void DebugFormattedBuf::AppendFormatted(size_t from, const char* fmt, va_list ap)
+int DebugFormattedBuf::Resize(size_t from, const char* fmt)
 {
-    va_list ap2;
-
-    // вычисляем размер буфера под форматированную строку
-    va_copy(ap2, ap);
-#ifndef _MSC_VER
-    char tmp[2];
-    size_t reqSize = vsnprintf(tmp, 1, fmt, ap2);
-#else
-    size_t reqSize = _vscprintf(fmt, ap2);
-#endif
-    reqSize++; // Резервируем место под завершающий 0
-    va_end(ap2);
-
-    // резервируем буфер необходимого размера
+    int c = 0;
+    int len = strlen(fmt);
+    for (int i = 0; i < len; i++)
+    {
+        if (fmt[i] == '%') c++;
+    }
+    int reqSize = len + 1 + c * 260;
     Resize(from + reqSize);
     if (Size() < from + reqSize)
     {
-        return;
+        return -1;
     }
+    return reqSize;
+}
 
+
+void DebugFormattedBuf::AppendFormatted(size_t from, const char* fmt, va_list ap)
+{
+    if (fmt == 0) return;
+    if (strcmp(fmt, "") == 0) return;
+    // вычисляем размер буфера под форматированную строку и резервируем его
+    int reqSize = Resize(from, fmt);
+    if (reqSize == -1) return;
 
     // форматируем буфер
     vsnprintf(buf_ + from, reqSize, fmt, ap);
@@ -204,64 +215,55 @@ size_t DebugTool::Prepare(eMsgType msgType,
     if (msgType == kInfo)
     {
         sprintf(typeStrHeader_, "[INFO]:");
-        typeStrFooter_[0] = 0;//sprintf(typeStrFooter_, "");
+        typeStrFooter_[0] = 0;
     }
     else if (msgType == kTrace)
     {
         sprintf(typeStrHeader_, "[TRACE]:");
-#if Z3D_DEBUG_LEVEL >= Z3D_DEBUG_LEVEL_LOW
         sprintf(typeStrFooter_, "in file");
-#else
-        sprintf(typeStrFooter_, "");
-#endif
     }
     else if (msgType == kAssert)
     {
         sprintf(typeStrHeader_, "[ASSERT]:");
-#if Z3D_DEBUG_LEVEL >= Z3D_DEBUG_LEVEL_LOW
-        sprintf(typeStrFooter_, "failed in file");
-#else
-        sprintf(typeStrFooter_, "");
-#endif
+        if (s_releaseMode )
+            typeStrFooter_[0] = 0;
+        else
+            sprintf(typeStrFooter_, "failed in file");
     }
     else if (msgType == kDebug)
     {
         sprintf(typeStrHeader_, "[DEBUG]:");
-#if Z3D_DEBUG_LEVEL >= Z3D_DEBUG_LEVEL_LOW
-        sprintf(typeStrFooter_, "in file");
-#else
-        sprintf(typeStrFooter_, "");
-#endif
+        if (s_releaseMode )
+            typeStrFooter_[0] = 0;
+        else
+            sprintf(typeStrFooter_, "in file");
     }
     else if (msgType == kWarning)
     {
         sprintf(typeStrHeader_, "[WARN]:");
-#if Z3D_DEBUG_LEVEL >= Z3D_DEBUG_LEVEL_LOW
-        sprintf(typeStrFooter_, "reported on file");
-#else
-        sprintf(typeStrFooter_, "");
-#endif
+        if (s_releaseMode )
+            typeStrFooter_[0] = 0;
+        else
+            sprintf(typeStrFooter_, "reported on file");
     }
     else if (msgType == kError)
     {
         sprintf(typeStrHeader_, "[ERROR]:");
-#if Z3D_DEBUG_LEVEL >= Z3D_DEBUG_LEVEL_LOW
-        sprintf(typeStrFooter_, "found in file");
-#else
-        sprintf(typeStrFooter_, "");
-#endif
+        if (s_releaseMode )
+            typeStrFooter_[0] = 0;
+        else
+            sprintf(typeStrFooter_, "found in file");
     }
     else if (msgType == kFatal)
     {
         sprintf(typeStrHeader_, "[FATAL]:");
-#if Z3D_DEBUG_LEVEL >= Z3D_DEBUG_LEVEL_LOW
-        sprintf(typeStrFooter_, "found in file");
-#else
-        sprintf(typeStrFooter_, "");
-#endif
+        if (s_releaseMode )
+            typeStrFooter_[0] = 0;
+        else
+            sprintf(typeStrFooter_, "found in file");
     }
 
-    if (filename != 0)
+    if (!s_releaseMode && filename != 0)
         sprintf(filenameLine_, "\"%s\"(%d)", filename, iLine);
     else
         strcpy (filenameLine_, "");
@@ -272,14 +274,26 @@ size_t DebugTool::Prepare(eMsgType msgType,
     else
         strcpy(detailsWord_, "");
 
-    size_t reqSize = strlen (typeStrHeader_)
+    size_t reqSize = 0;
+    if (s_releaseMode)
+    {
+        reqSize = strlen (typeStrHeader_)
+                + strlen("x")
+                + 1
+                + 16;
+    }
+    else
+    {
+        reqSize = strlen (typeStrHeader_)
                 + strlen(exp)
                 + strlen(typeStrFooter_)
                 + strlen(filenameLine_)
                 + strlen(detailsWord_)
-                + strlen("x (x) x x. x\n")
+                + strlen("x (x) x x. \nx\n")
                 + 1
                 + 16;
+    }
+
 
     DebugFormattedBuf::Instance().Resize(reqSize);
     if (DebugFormattedBuf::Instance().Size() < reqSize)
@@ -287,14 +301,22 @@ size_t DebugTool::Prepare(eMsgType msgType,
         return 0;
     }
 
-
-    sprintf(DebugFormattedBuf::Instance().Buf(),
-            "%s (%s) %s %s. %s\n",
+    if (s_releaseMode)
+    {
+        sprintf(DebugFormattedBuf::Instance().Buf(),
+            "%s",
+            typeStrHeader_);
+    }
+    else
+    {
+        sprintf(DebugFormattedBuf::Instance().Buf(),
+            "%s (%s) %s %s. \n%s\n",
             typeStrHeader_,
             exp,
             typeStrFooter_,
             filenameLine_,
             detailsWord_);
+    }
 
     reqSize = strlen(DebugFormattedBuf::Instance().Buf());
     return reqSize;
@@ -309,12 +331,6 @@ void DebugTool::OutputMsg(eMsgType msgType,
                         bool fPopMsg,
                         const char* fmt, ...)
 {
-#ifndef Z3D_DEBUG
-    if (msgType == kDebug || msgType == kAssert)
-        return;
-
-#endif
-
     size_t from = Prepare(msgType, exp, filename, iLine, fmt);
 
     va_list ap;
@@ -322,10 +338,9 @@ void DebugTool::OutputMsg(eMsgType msgType,
     DebugFormattedBuf::Instance().AppendFormatted(from, fmt, ap);
     va_end(ap);
 
-    Log(DebugFormattedBuf::Instance().Buf());
 
-
-    printf(DebugFormattedBuf::Instance().Buf());
+    Log("%s\n", DebugFormattedBuf::Instance().Buf());
+    printf("%s\n", DebugFormattedBuf::Instance().Buf());
 
 
     if (fPopMsg)
@@ -380,15 +395,28 @@ void DebugTool::OutputMsg(eMsgType msgType,
 
 
 
+void DebugTool::SetReleaseMode()
+{
+    s_releaseMode = true;
+}
+
+void DebugTool::SetLogState(bool fOn)
+{
+    s_fLogOn = fOn;
+}
+
 void Log(const char* fmt, ...)
 {
-    LogFile lf;
-    if (lf)
+    if(s_fLogOn)
     {
-        va_list ap;
-        va_start(ap, fmt);
-        vfprintf(lf.f_, fmt, ap);
-        va_end(ap);
+        LogFile lf;
+        if (lf)
+        {
+            va_list ap;
+            va_start(ap, fmt);
+            vfprintf(lf.f_, fmt, ap);
+            va_end(ap);
+        }
     }
 }
 
